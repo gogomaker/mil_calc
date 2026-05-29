@@ -1,6 +1,6 @@
 {
   "name": "방안좌표법 계산기",
-  "description": "모바일 세로 화면에 최적화된 방안좌표법 군사 좌표 및 사거리 계산기",
+  "description": "방안좌표법, 극표정법, 기록점전이법 군사 좌표 및 사거리 계산기",
   "requestFramePermissions": [],
   "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
 }
