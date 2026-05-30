@@ -124,7 +124,7 @@ const RP_PRESETS: RpScenario[] = [
   }
 ];
 
-type MilitaryMethod = 'grid' | 'polar' | 'rp';
+type MilitaryMethod = 'grid' | 'polar' | 'rp' | 'subsequent';
 
 export default function App() {
   // Method state
@@ -207,6 +207,22 @@ export default function App() {
   const [rpOtaz, setRpOtaz] = useState<number | ''>('');
   const [rpShiftVertSign, setRpShiftVertSign] = useState<1 | -1>(1);
 
+  // State for Subsequent Fire (차후사격) - All empty by default unless populated via transition
+  const [subAzimuth, setSubAzimuth] = useState<number | ''>('');
+  const [subDeflection, setSubDeflection] = useState<number | ''>(2800);
+  const [subGridRange, setSubGridRange] = useState<number | ''>('');
+  const [subAuxiliaryRange, setSubAuxiliaryRange] = useState<number | ''>('');
+  const [subAuxiliaryRangeSign, setSubAuxiliaryRangeSign] = useState<1 | -1>(1);
+  const [subOtaz, setSubOtaz] = useState<number | ''>('');
+  const [subLatCorr, setSubLatCorr] = useState<number | ''>('');
+  const [subLatCorrSign, setSubLatCorrSign] = useState<1 | -1>(1);
+  const [subVertCorr, setSubVertCorr] = useState<number | ''>('');
+  const [subVertCorrSign, setSubVertCorrSign] = useState<1 | -1>(1);
+
+  const [subCalculated, setSubCalculated] = useState<boolean>(false);
+  const [subResultDeflection, setSubResultDeflection] = useState<number | null>(null);
+  const [subResultRange, setSubResultRange] = useState<number | null>(null);
+
   // Constants (always required for mortar emplacement) - All empty by default
   const [Mx, setMx] = useState<number | ''>('');
   const [My, setMy] = useState<number | ''>('');
@@ -286,6 +302,48 @@ export default function App() {
     }
   };
 
+  const handleSubAuxiliaryRangeChange = (val: string) => {
+    if (val === '') {
+      setSubAuxiliaryRange('');
+      return;
+    }
+    const stripped = val.replace(/[-+]/g, '');
+    if (stripped === '') {
+      setSubAuxiliaryRange('');
+    } else {
+      const num = Number(stripped);
+      setSubAuxiliaryRange(isNaN(num) ? '' : num);
+    }
+  };
+
+  const handleSubLatCorrChange = (val: string) => {
+    if (val === '') {
+      setSubLatCorr('');
+      return;
+    }
+    const stripped = val.replace(/[-+]/g, '');
+    if (stripped === '') {
+      setSubLatCorr('');
+    } else {
+      const num = Number(stripped);
+      setSubLatCorr(isNaN(num) ? '' : num);
+    }
+  };
+
+  const handleSubVertCorrChange = (val: string) => {
+    if (val === '') {
+      setSubVertCorr('');
+      return;
+    }
+    const stripped = val.replace(/[-+]/g, '');
+    if (stripped === '') {
+      setSubVertCorr('');
+    } else {
+      const num = Number(stripped);
+      setSubVertCorr(isNaN(num) ? '' : num);
+    }
+  };
+
   const resultsRef = useRef<HTMLDivElement>(null);
   const mapCanvasRef = useRef<HTMLCanvasElement>(null);
 
@@ -305,6 +363,62 @@ export default function App() {
     }
     return false;
   })();
+
+  const isSubsequentValid =
+    subAzimuth !== '' &&
+    subDeflection !== '' &&
+    subGridRange !== '' &&
+    subAuxiliaryRange !== '' &&
+    subOtaz !== '' &&
+    subLatCorr !== '' &&
+    subVertCorr !== '';
+
+  const handleCalculateSubsequent = () => {
+    if (isSubsequentValid) {
+      const x = ((Number(subLatCorr) || 0) * subLatCorrSign) / 10;
+      const y = ((Number(subVertCorr) || 0) * subVertCorrSign) / 10;
+      const delta_mil = Number(subAzimuth) - Number(subOtaz);
+      const rad = delta_mil * (Math.PI / 3200);
+
+      const dx_rot = (x * Math.cos(rad)) + (y * Math.sin(rad));
+      const dy_rot = -(x * Math.sin(rad)) + (y * Math.cos(rad));
+
+      const finalDeflection = Number(subDeflection) - (dx_rot / (Number(subGridRange) / 1000));
+      const finalRange = Number(subGridRange) + ((Number(subAuxiliaryRange) || 0) * subAuxiliaryRangeSign) + dy_rot;
+
+      setSubResultDeflection(Math.round(finalDeflection));
+      setSubResultRange(Math.round(finalRange));
+      setSubCalculated(true);
+
+      setTimeout(() => {
+        resultsRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      }, 100);
+    }
+  };
+
+  const handleTransitionToSubsequent = () => {
+    setSubAzimuth(roundedAzimuthMil);
+    setSubDeflection(2800);
+    setSubGridRange(roundedMapDistance);
+
+    const auxRangeValue = roundedAuxiliaryRange;
+    setSubAuxiliaryRange(Math.abs(auxRangeValue));
+    setSubAuxiliaryRangeSign(auxRangeValue >= 0 ? 1 : -1);
+
+    setSubOtaz(Math.round(resolvedTarget.otaz));
+    
+    // Clear any existing subsequent corrections or results
+    setSubLatCorr('');
+    setSubLatCorrSign(1);
+    setSubVertCorr('');
+    setSubVertCorrSign(1);
+    setSubCalculated(false);
+    setSubResultDeflection(null);
+    setSubResultRange(null);
+
+    setCalcMode('subsequent');
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  };
 
   // 2. Target Coordinates Resolution
   const resolvedTarget = (() => {
@@ -334,28 +448,32 @@ export default function App() {
 
       return { x, y, h, otaz: azMil };
     }
-    // rp coordinate shift mode - Calculates using vector addition optimization (M17 calculation plate rotation)
-    const rX = Number(Rx) || 0;
-    const rY = Number(Ry) || 0;
-    const rH = Number(Rh) || 0;
-    const shiftLat = (Number(rpShiftLat) || 0) * rpShiftLatSign;
-    const shiftDist = (Number(rpShiftDist) || 0) * rpShiftDistSign;
-    const shiftVert = (Number(rpShiftVert) || 0) * rpShiftVertSign;
-    const oTazMil = Number(rpOtaz) || 0;
+    if (calcMode === 'rp') {
+      // rp coordinate shift mode - Calculates using vector addition optimization (M17 calculation plate rotation)
+      const rX = Number(Rx) || 0;
+      const rY = Number(Ry) || 0;
+      const rH = Number(Rh) || 0;
+      const shiftLat = (Number(rpShiftLat) || 0) * rpShiftLatSign;
+      const shiftDist = (Number(rpShiftDist) || 0) * rpShiftDistSign;
+      const shiftVert = (Number(rpShiftVert) || 0) * rpShiftVertSign;
+      const oTazMil = Number(rpOtaz) || 0;
 
-    // 1) 방위각의 라디안 변환 (Y축 기준 시계방향)
-    const rad_OTAZ = oTazMil * (Math.PI / 3200);
+      // 1) 방위각의 라디안 변환 (Y축 기준 시계방향)
+      const rad_OTAZ = oTazMil * (Math.PI / 3200);
 
-    // 2) 전이량의 절대 좌표계 벡터 변환 (10m 단위 좌표계 기준)
-    const dx_shift = (shiftLat / 10) * Math.cos(rad_OTAZ) + (shiftDist / 10) * Math.sin(rad_OTAZ);
-    const dy_shift = -(shiftLat / 10) * Math.sin(rad_OTAZ) + (shiftDist / 10) * Math.cos(rad_OTAZ);
+      // 2) 전이량의 절대 좌표계 벡터 변환 (10m 단위 좌표계 기준)
+      const dx_shift = (shiftLat / 10) * Math.cos(rad_OTAZ) + (shiftDist / 10) * Math.sin(rad_OTAZ);
+      const dy_shift = -(shiftLat / 10) * Math.sin(rad_OTAZ) + (shiftDist / 10) * Math.cos(rad_OTAZ);
 
-    // 3) 표적(T) 절대 좌표 산출
-    const x = rX + dx_shift;
-    const y = rY + dy_shift;
-    const h = rH + shiftVert;
+      // 3) 표적(T) 절대 좌표 산출
+      const x = rX + dx_shift;
+      const y = rY + dy_shift;
+      const h = rH + shiftVert;
 
-    return { x, y, h, otaz: oTazMil };
+      return { x, y, h, otaz: oTazMil };
+    }
+    // fallback default (safely handles subsequent mode)
+    return { x: 0, y: 0, h: 0, otaz: 0 };
   })();
 
   // 3. Artillery Vector Calculation
@@ -439,13 +557,23 @@ export default function App() {
       setTx(''); setTy(''); setTh(''); setOTAZ('');
     } else if (calcMode === 'polar') {
       setOx(''); setOy(''); setOh(''); setPolarDist(''); setPolarDistSign(1); setPolarAzimuth(''); setPolarVert(''); setPolarVertSign(1);
-    } else {
+    } else if (calcMode === 'rp') {
       setRx(''); setRy(''); setRh(''); setRpShiftLat(''); setRpShiftLatSign(1); setRpShiftDist(''); setRpShiftDistSign(1); setRpShiftVert(''); setRpOtaz(''); setRpShiftVertSign(1);
+    } else {
+      setSubAzimuth(''); setSubDeflection(2800); setSubGridRange(''); setSubAuxiliaryRange(''); setSubOtaz(''); setSubLatCorr(''); setSubVertCorr('');
+      setSubAuxiliaryRangeSign(1); setSubLatCorrSign(1); setSubVertCorrSign(1);
+      setSubCalculated(false);
+      setSubResultDeflection(null);
+      setSubResultRange(null);
     }
     setMx(''); setMy(''); setMh('');
   };
 
   const handleCalculate = () => {
+    if (calcMode === 'subsequent') {
+      handleCalculateSubsequent();
+      return;
+    }
     setCalculationTrigger(prev => prev + 1);
     setTimeout(() => {
       resultsRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
@@ -454,6 +582,32 @@ export default function App() {
 
   // Clipboard copies
   const handleCopyToClipboard = () => {
+    if (calcMode === 'subsequent') {
+      if (!subCalculated || subResultDeflection === null || subResultRange === null) return;
+      const textToCopy = `[차후 정밀 수정사격 제원 산출 결과]
+----------------------------
+■ 기존 사격방위각: ${subAzimuth} mil
+■ 기존 편각: ${subDeflection} mil
+■ 기존 도상거리: ${subGridRange} m
+■ 기존 보조사거리: ${subAuxiliaryRangeSign === 1 ? '+' : '-'}${subAuxiliaryRange} m
+■ 기존 OTAZ: ${subOtaz} mil
+■ 관측자 좌우수정량: ${subLatCorrSign === 1 ? '+' : '-'}${subLatCorr} m
+■ 관측자 상하수정량: ${subVertCorrSign === 1 ? '+' : '-'}${subVertCorr} m
+----------------------------
+▶ 최종 수정편각: ${subResultDeflection} mil
+▶ 최종 수정사거리: ${subResultRange} m`;
+
+      navigator.clipboard.writeText(textToCopy)
+        .then(() => {
+          setCopied(true);
+          setTimeout(() => setCopied(false), 2000);
+        })
+        .catch(err => {
+          console.error('Failed to copy text: ', err);
+        });
+      return;
+    }
+
     if (!isInputsValid) return;
 
     let title = '';
@@ -803,7 +957,7 @@ ${detailSection}
         <main className="flex-grow w-full px-4 py-4 flex flex-col gap-4">
           
           {/* Methodology Selector Tabs */}
-          <div className={`border p-1 grid grid-cols-3 gap-1 rounded-xl transition-all duration-300 ${
+          <div className={`border p-1 grid grid-cols-4 gap-1 rounded-xl transition-all duration-300 ${
             isDarkMode 
               ? 'bg-[#0f1911] border-[#22382a]' 
               : 'bg-slate-100 border-slate-200/60'
@@ -818,7 +972,7 @@ ${detailSection}
                     : 'text-slate-600 hover:text-slate-900'
               }`}
             >
-              방안좌표법
+              방안좌표
             </button>
             <button
               onClick={() => { setCalcMode('polar'); setCalculationTrigger(prev => prev + 1); }}
@@ -842,12 +996,41 @@ ${detailSection}
                     : 'text-slate-600 hover:text-slate-900'
               }`}
             >
-              기록점전이법
+              기록점
+            </button>
+            <button
+               onClick={() => {
+                setCalcMode('subsequent');
+                setSubAzimuth('');
+                setSubDeflection(2800);
+                setSubGridRange('');
+                setSubAuxiliaryRange('');
+                setSubAuxiliaryRangeSign(1);
+                setSubOtaz('');
+                setSubLatCorr('');
+                setSubLatCorrSign(1);
+                setSubVertCorr('');
+                setSubVertCorrSign(1);
+                setSubCalculated(false);
+                setSubResultDeflection(null);
+                setSubResultRange(null);
+                setCalculationTrigger(prev => prev + 1);
+              }}
+              className={`py-1.5 text-[10.5px] font-extrabold rounded-lg transition-all ${
+                calcMode === 'subsequent' 
+                  ? 'bg-[#10b981] text-white shadow' 
+                  : isDarkMode 
+                    ? 'text-[#8cb89d] hover:text-emerald-300' 
+                    : 'text-slate-600 hover:text-slate-900'
+              }`}
+            >
+              차후사격
             </button>
           </div>
 
           {/* Preset Tactical Scenarios Selector dynamically rendered based on calculation mode */}
-          <div className={`${currentTheme.cardBg} rounded-xl p-3 shadow-sm flex flex-col gap-2 transition-colors duration-500`}>
+          {calcMode !== 'subsequent' && (
+            <div className={`${currentTheme.cardBg} rounded-xl p-3 shadow-sm flex flex-col gap-2 transition-colors duration-500`}>
             <div className={`flex items-center gap-1.5 text-[10px] font-extrabold uppercase tracking-wider ${currentTheme.labelColor}`}>
               <Sliders className="w-3.5 h-3.5 text-emerald-600" />
               <span>
@@ -917,6 +1100,7 @@ ${detailSection}
               ))}
             </div>
           </div>
+          )}
 
           {/* Inputs section (입력부) */}
           <section id="input-section" className={`${currentTheme.cardBg} rounded-2xl p-5 shadow-sm transition-all duration-500 relative bg-white`}>
@@ -937,51 +1121,53 @@ ${detailSection}
 
             <form onSubmit={(e) => { e.preventDefault(); handleCalculate(); }} className="space-y-4">
               
-              {/* FIXED COMPONENT: Gun Emplacement Base (포진지 좌표) */}
-              <div className={`space-y-2 border-b pb-3 ${isDarkMode ? 'border-[#2d4737]' : 'border-slate-100'}`}>
-                <div className={`text-[11px] font-bold uppercase tracking-widest flex items-center gap-2 ${isDarkMode ? 'text-emerald-400' : 'text-[#10b981]'}`}>
-                  <MapPin className="w-3.5 h-3.5" />
-                  <span>아군 포진지 좌표 및 고도 (Mortar Base)</span>
-                </div>
-                
-                <div className="grid grid-cols-3 gap-2">
-                  <div>
-                    <label htmlFor="mx-input" className={`block text-[10px] font-bold mb-1 ${currentTheme.labelColor}`}>M_x (진지 X좌표)</label>
-                    <input
-                      id="mx-input"
-                      type="number"
-                      placeholder="M_x 입력"
-                      value={Mx}
-                      onChange={(e) => setMx(e.target.value === '' ? '' : Number(e.target.value))}
-                      className={`w-full px-2.5 py-1.5 rounded-lg text-sm font-mono border transition-all shadow-sm focus:outline-none focus:ring-2 focus:ring-[#10b981]/10 ${currentTheme.inputStyles}`}
-                    />
+               {/* FIXED COMPONENT: Gun Emplacement Base (포진지 좌표) */}
+              {calcMode !== 'subsequent' && (
+                <div className={`space-y-2 border-b pb-3 ${isDarkMode ? 'border-[#2d4737]' : 'border-slate-100'}`}>
+                  <div className={`text-[11px] font-bold uppercase tracking-widest flex items-center gap-2 ${isDarkMode ? 'text-emerald-400' : 'text-[#10b981]'}`}>
+                    <MapPin className="w-3.5 h-3.5" />
+                    <span>아군 포진지 좌표 및 고도 (Mortar Base)</span>
                   </div>
                   
-                  <div>
-                    <label htmlFor="my-input" className={`block text-[10px] font-bold mb-1 ${currentTheme.labelColor}`}>M_y (진지 Y좌표)</label>
-                    <input
-                      id="my-input"
-                      type="number"
-                      placeholder="M_y 입력"
-                      value={My}
-                      onChange={(e) => setMy(e.target.value === '' ? '' : Number(e.target.value))}
-                      className={`w-full px-2.5 py-1.5 rounded-lg text-sm font-mono border transition-all shadow-sm focus:outline-none focus:ring-2 focus:ring-[#10b981]/10 ${currentTheme.inputStyles}`}
-                    />
-                  </div>
+                  <div className="grid grid-cols-3 gap-2">
+                    <div>
+                      <label htmlFor="mx-input" className={`block text-[10px] font-bold mb-1 ${currentTheme.labelColor}`}>M_x (진지 X좌표)</label>
+                      <input
+                        id="mx-input"
+                        type="number"
+                        placeholder="M_x 입력"
+                        value={Mx}
+                        onChange={(e) => setMx(e.target.value === '' ? '' : Number(e.target.value))}
+                        className={`w-full px-2.5 py-1.5 rounded-lg text-sm font-mono border transition-all shadow-sm focus:outline-none focus:ring-2 focus:ring-[#10b981]/10 ${currentTheme.inputStyles}`}
+                      />
+                    </div>
+                    
+                    <div>
+                      <label htmlFor="my-input" className={`block text-[10px] font-bold mb-1 ${currentTheme.labelColor}`}>M_y (진지 Y좌표)</label>
+                      <input
+                        id="my-input"
+                        type="number"
+                        placeholder="M_y 입력"
+                        value={My}
+                        onChange={(e) => setMy(e.target.value === '' ? '' : Number(e.target.value))}
+                        className={`w-full px-2.5 py-1.5 rounded-lg text-sm font-mono border transition-all shadow-sm focus:outline-none focus:ring-2 focus:ring-[#10b981]/10 ${currentTheme.inputStyles}`}
+                      />
+                    </div>
 
-                  <div>
-                    <label htmlFor="mh-input" className={`block text-[10px] font-bold mb-1 ${currentTheme.labelColor}`}>M_h (진지 고도)</label>
-                    <input
-                      id="mh-input"
-                      type="number"
-                      placeholder="M_h 고도"
-                      value={Mh}
-                      onChange={(e) => setMh(e.target.value === '' ? '' : Number(e.target.value))}
-                      className={`w-full px-2.5 py-1.5 rounded-lg text-sm font-mono border transition-all shadow-sm focus:outline-none focus:ring-2 focus:ring-[#10b981]/10 ${currentTheme.inputStyles}`}
-                    />
+                    <div>
+                      <label htmlFor="mh-input" className={`block text-[10px] font-bold mb-1 ${currentTheme.labelColor}`}>M_h (진지 고도)</label>
+                      <input
+                        id="mh-input"
+                        type="number"
+                        placeholder="M_h 고도"
+                        value={Mh}
+                        onChange={(e) => setMh(e.target.value === '' ? '' : Number(e.target.value))}
+                        className={`w-full px-2.5 py-1.5 rounded-lg text-sm font-mono border transition-all shadow-sm focus:outline-none focus:ring-2 focus:ring-[#10b981]/10 ${currentTheme.inputStyles}`}
+                      />
+                    </div>
                   </div>
                 </div>
-              </div>
+              )}
 
               {/* METHOD-SPECIFIC DYNAMIC INPUT FIELDS */}
 
@@ -1365,8 +1551,171 @@ ${detailSection}
                 </div>
               )}
 
+              {/* METHOD 4: 차후사격전이법 (Subsequent Fire Method) Inputs */}
+              {calcMode === 'subsequent' && (
+                <div className="space-y-4 animate-fade-in text-slate-800">
+                  
+                  {/* 기존 제원 (Existing Data) */}
+                  <div className="space-y-3">
+                    <div className="text-[11px] font-black text-[#10b981] uppercase tracking-widest flex items-center gap-2 after:content-[''] after:flex-grow after:h-[1px] after:bg-slate-200 mt-1">
+                      <Sliders className="w-3.5 h-3.5 text-[#10b981]" />
+                      <span>기존 계산 사격 제원 (Existing Data)</span>
+                    </div>
+
+                    <div className="grid grid-cols-2 gap-2">
+                      <div>
+                        <label htmlFor="sub-azimuth-input" className={`block text-[10px] font-bold mb-1 ${currentTheme.labelColor}`}>사격방위각 (mil)</label>
+                        <input
+                          id="sub-azimuth-input"
+                          type="number"
+                          placeholder="mil"
+                          value={subAzimuth}
+                          onChange={(e) => setSubAzimuth(e.target.value === '' ? '' : Number(e.target.value))}
+                          className={`w-full px-2.5 py-1.5 rounded-lg text-sm font-mono border transition-all shadow-sm focus:outline-none focus:ring-2 focus:ring-[#10b981]/10 ${currentTheme.inputStyles}`}
+                        />
+                      </div>
+                      <div>
+                        <label htmlFor="sub-deflection-input" className={`block text-[10px] font-bold mb-1 ${currentTheme.labelColor}`}>편각 (mil)</label>
+                        <input
+                          id="sub-deflection-input"
+                          type="number"
+                          placeholder="편각 (기본 2800)"
+                          value={subDeflection}
+                          onChange={(e) => setSubDeflection(e.target.value === '' ? '' : Number(e.target.value))}
+                          className={`w-full px-2.5 py-1.5 rounded-lg text-sm font-mono border transition-all shadow-sm focus:outline-none focus:ring-2 focus:ring-[#10b981]/10 ${currentTheme.inputStyles}`}
+                        />
+                      </div>
+                    </div>
+
+                    <div className="grid grid-cols-3 gap-2">
+                      <div>
+                        <label htmlFor="sub-gridrange-input" className={`block text-[10px] font-bold mb-1 ${currentTheme.labelColor}`}>도상거리 (m)</label>
+                        <input
+                          id="sub-gridrange-input"
+                          type="number"
+                          placeholder="m"
+                          value={subGridRange}
+                          onChange={(e) => setSubGridRange(e.target.value === '' ? '' : Number(e.target.value))}
+                          className={`w-full px-2.5 py-1.5 rounded-lg text-sm font-mono border transition-all shadow-sm focus:outline-none focus:ring-2 focus:ring-[#10b981]/10 ${currentTheme.inputStyles}`}
+                        />
+                      </div>
+                      <div>
+                        <label htmlFor="sub-auxrange-input" className={`block text-[10px] font-bold mb-1 ${currentTheme.labelColor}`}>보조사거리 (m)</label>
+                        <div className={`flex rounded-lg overflow-hidden border shadow-sm h-[36px] ${isDarkMode ? 'border-[#2d4737] bg-[#1a2e22]' : 'border-slate-300 bg-slate-50'}`}>
+                          <div className={`flex flex-col shrink-0 select-none border-r ${isDarkMode ? 'border-[#2d4737]' : 'border-slate-200'}`}>
+                            <button
+                              type="button"
+                              onClick={() => setSubAuxiliaryRangeSign(1)}
+                              className={`h-[18px] w-6 text-[8.5px] font-black flex items-center justify-center transition-all ${subAuxiliaryRangeSign === 1 ? 'bg-emerald-500 text-white' : isDarkMode ? 'text-[#8cb89d] hover:bg-[#223d2d]' : 'text-slate-400 hover:text-slate-700 hover:bg-slate-100'}`}
+                            >
+                              +
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => setSubAuxiliaryRangeSign(-1)}
+                              className={`h-[18px] w-6 text-[8.5px] font-black flex items-center justify-center transition-all border-t ${isDarkMode ? 'border-[#2d4737]' : 'border-slate-200'} ${subAuxiliaryRangeSign === -1 ? 'bg-rose-500 text-white' : isDarkMode ? 'text-[#8cb89d] hover:bg-[#223d2d]' : 'text-slate-400 hover:text-slate-700 hover:bg-slate-100'}`}
+                            >
+                              -
+                            </button>
+                          </div>
+                          <input
+                            id="sub-auxrange-input"
+                            type="number"
+                            placeholder="m"
+                            value={subAuxiliaryRange}
+                            onChange={(e) => handleSubAuxiliaryRangeChange(e.target.value)}
+                            className={`w-full px-2 py-1 text-sm font-mono focus:outline-none ${isDarkMode ? 'bg-transparent text-emerald-100 placeholder-[#4f735d]' : 'bg-white text-slate-800 placeholder-slate-400'}`}
+                          />
+                        </div>
+                      </div>
+                      <div>
+                        <label htmlFor="sub-otaz-input" className={`block text-[10px] font-bold mb-1 ${currentTheme.labelColor}`}>관목방위각 (mil)</label>
+                        <input
+                          id="sub-otaz-input"
+                          type="number"
+                          placeholder="mil"
+                          value={subOtaz}
+                          onChange={(e) => setSubOtaz(e.target.value === '' ? '' : Number(e.target.value))}
+                          className={`w-full px-2.5 py-1.5 rounded-lg text-sm font-mono border transition-all shadow-sm focus:outline-none focus:ring-2 focus:ring-[#10b981]/10 ${currentTheme.inputStyles}`}
+                        />
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* 관측 수정량 (Observer Corrections) */}
+                  <div className="space-y-3 pt-1">
+                    <div className="text-[11px] font-black text-[#10b981] uppercase tracking-widest flex items-center gap-2 after:content-[''] after:flex-grow after:h-[1px] after:bg-slate-200 mt-1">
+                      <Compass className="w-3.5 h-3.5 text-orange-500" />
+                      <span>관측자 수정량 (Observer Corrections)</span>
+                    </div>
+
+                    <div className="grid grid-cols-2 gap-2">
+                      <div>
+                        <label htmlFor="sub-latcorr-input" className={`block text-[10px] font-bold mb-1 ${currentTheme.labelColor}`}>좌우수정량 (m, 좌-, 우+)</label>
+                        <div className={`flex rounded-lg overflow-hidden border shadow-sm h-[36px] ${isDarkMode ? 'border-[#2d4737] bg-[#1a2e22]' : 'border-slate-300 bg-slate-50'}`}>
+                          <div className={`flex flex-col shrink-0 select-none border-r ${isDarkMode ? 'border-[#2d4737]' : 'border-slate-200'}`}>
+                            <button
+                              type="button"
+                              onClick={() => setSubLatCorrSign(1)}
+                              className={`h-[18px] w-6 text-[8.5px] font-black flex items-center justify-center transition-all ${subLatCorrSign === 1 ? 'bg-emerald-500 text-white' : isDarkMode ? 'text-[#8cb89d] hover:bg-[#223d2d]' : 'text-slate-400 hover:text-slate-700 hover:bg-slate-100'}`}
+                            >
+                              +
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => setSubLatCorrSign(-1)}
+                              className={`h-[18px] w-6 text-[8.5px] font-black flex items-center justify-center transition-all border-t ${isDarkMode ? 'border-[#2d4737]' : 'border-slate-200'} ${subLatCorrSign === -1 ? 'bg-rose-500 text-white' : isDarkMode ? 'text-[#8cb89d] hover:bg-[#223d2d]' : 'text-slate-400 hover:text-slate-700 hover:bg-slate-100'}`}
+                            >
+                              -
+                            </button>
+                          </div>
+                          <input
+                            id="sub-latcorr-input"
+                            type="number"
+                            placeholder="m"
+                            value={subLatCorr}
+                            onChange={(e) => handleSubLatCorrChange(e.target.value)}
+                            className={`w-full px-2 py-1 text-sm font-mono focus:outline-none ${isDarkMode ? 'bg-transparent text-emerald-100 placeholder-[#4f735d]' : 'bg-white text-slate-800 placeholder-slate-400'}`}
+                          />
+                        </div>
+                      </div>
+                      <div>
+                        <label htmlFor="sub-vertcorr-input" className={`block text-[10px] font-bold mb-1 ${currentTheme.labelColor}`}>상하수정량 (m, 줄-, 더+)</label>
+                        <div className={`flex rounded-lg overflow-hidden border shadow-sm h-[36px] ${isDarkMode ? 'border-[#2d4737] bg-[#1a2e22]' : 'border-slate-300 bg-slate-50'}`}>
+                          <div className={`flex flex-col shrink-0 select-none border-r ${isDarkMode ? 'border-[#2d4737]' : 'border-slate-200'}`}>
+                            <button
+                              type="button"
+                              onClick={() => setSubVertCorrSign(1)}
+                              className={`h-[18px] w-6 text-[8.5px] font-black flex items-center justify-center transition-all ${subVertCorrSign === 1 ? 'bg-emerald-500 text-white' : isDarkMode ? 'text-[#8cb89d] hover:bg-[#223d2d]' : 'text-slate-400 hover:text-slate-700 hover:bg-slate-100'}`}
+                            >
+                              +
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => setSubVertCorrSign(-1)}
+                              className={`h-[18px] w-6 text-[8.5px] font-black flex items-center justify-center transition-all border-t ${isDarkMode ? 'border-[#2d4737]' : 'border-slate-200'} ${subVertCorrSign === -1 ? 'bg-rose-500 text-white' : isDarkMode ? 'text-[#8cb89d] hover:bg-[#223d2d]' : 'text-slate-400 hover:text-slate-700 hover:bg-slate-100'}`}
+                            >
+                              -
+                            </button>
+                          </div>
+                          <input
+                            id="sub-vertcorr-input"
+                            type="number"
+                            placeholder="m"
+                            value={subVertCorr}
+                            onChange={(e) => handleSubVertCorrChange(e.target.value)}
+                            className={`w-full px-2 py-1 text-sm font-mono focus:outline-none ${isDarkMode ? 'bg-transparent text-emerald-100 placeholder-[#4f735d]' : 'bg-white text-slate-800 placeholder-slate-400'}`}
+                          />
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+
+                </div>
+              )}
+
               {/* Status information or helper triggers */}
-              {!isInputsValid && (
+              {!isInputsValid && calcMode !== 'subsequent' && (
                 <div className="p-2.5 rounded-lg bg-amber-50 border border-amber-200 text-amber-800 text-xs flex items-center gap-2 transition-all">
                   <Info className="w-3.5 h-3.5 text-amber-600 shrink-0" />
                   <span>
@@ -1377,21 +1726,28 @@ ${detailSection}
                 </div>
               )}
 
+              {!isSubsequentValid && calcMode === 'subsequent' && (
+                <div className="p-2.5 rounded-lg bg-amber-50 border border-amber-200 text-amber-800 text-xs flex items-center gap-2 transition-all">
+                  <Info className="w-3.5 h-3.5 text-amber-600 shrink-0" />
+                  <span>정보: 차후 사격 계산을 위해 기존 사격 제원 5가지 및 관측자 수정량 2가지를 모두 입력하십시오.</span>
+                </div>
+              )}
+
               {/* ACTION EXECUTE BUTTON */}
               <div className="pt-2">
                 <motion.button
                   id="calculate-button"
                   whileTap={{ scale: 0.98 }}
                   type="submit"
-                  disabled={!isInputsValid}
+                  disabled={calcMode === 'subsequent' ? !isSubsequentValid : !isInputsValid}
                   className={`w-full py-3.5 rounded-xl text-center uppercase tracking-wide flex items-center justify-center gap-2 transition-all cursor-pointer ${
-                    isInputsValid 
+                    (calcMode === 'subsequent' ? isSubsequentValid : isInputsValid) 
                       ? currentTheme.btnColors
                       : 'bg-[#10b981]/10 text-slate-400 border border-[#10b981]/25 cursor-not-allowed'
                   }`}
                 >
                   <Zap className="w-4 h-4" />
-                  <span>사격 제원 계산하기</span>
+                  <span>{calcMode === 'subsequent' ? '차후 수정사격 제원 산출' : '사격 제원 계산하기'}</span>
                 </motion.button>
               </div>
 
@@ -1445,9 +1801,9 @@ ${detailSection}
             <div className="flex items-center justify-between mb-3 border-b border-white/10 pb-2 z-10">
               <h2 className="text-xs font-black tracking-widest text-[#f8fafc] uppercase flex items-center gap-1.5">
                 <span className="w-1.5 h-3 bg-[#10b981] rounded-full inline-block animate-pulse"></span>
-                사격 제원 산출 결과 (Outputs)
+                {calcMode === 'subsequent' ? '차후 수정사격 결과 (Subsequent)' : '사격 제원 산출 결과 (Outputs)'}
               </h2>
-              {isInputsValid && (
+              {((calcMode === 'subsequent' && subCalculated) || (calcMode !== 'subsequent' && isInputsValid)) && (
                 <button
                   type="button"
                   onClick={handleCopyToClipboard}
@@ -1459,18 +1815,68 @@ ${detailSection}
               )}
             </div>
 
-            {!isInputsValid ? (
-              <div className="text-center py-10 space-y-2">
-                <div className="w-10 h-10 rounded-full bg-white/5 text-slate-400 flex items-center justify-center mx-auto border border-white/10">
-                  <Crosshair className="w-5 h-5 animate-spin" style={{ animationDuration: '3s' }} />
+            {calcMode === 'subsequent' ? (
+              // Subsequent fire calculation mode output view
+              !subCalculated ? (
+                <div className="text-center py-10 space-y-2">
+                  <div className="w-10 h-10 rounded-full bg-white/5 text-slate-400 flex items-center justify-center mx-auto border border-white/10">
+                    <Sliders className="w-5 h-5 animate-pulse" />
+                  </div>
+                  <div>
+                    <p className="text-slate-300 text-xs font-bold">산출된 차후 사격 제원이 없습니다</p>
+                    <p className="text-slate-500 text-[10px] mt-0.5">상단 수정량 변수를 입력하고 "차후 수정사격 제원 산출" 버튼을 누르십시오.</p>
+                  </div>
                 </div>
-                <div>
-                  <p className="text-slate-300 text-xs font-bold">산출된 사격 제원이 없습니다</p>
-                  <p className="text-slate-500 text-[10px] mt-0.5">상단 입력 폼에 모든 사격 연산 수치를 입력해주십시오.</p>
+              ) : (
+                <div key={calculationTrigger} className="space-y-3.5 animate-fade-in text-white text-left">
+                  {/* Embedded target coordinates derived summary display */}
+                  <div className="p-2.5 rounded-lg bg-emerald-950/20 border border-emerald-800/30 text-[10px] flex flex-col gap-1 text-[#a1bfae]">
+                    <span className="font-extrabold uppercase tracking-wide text-emerald-400">적용 완료된 차후 사격 제원 요약</span>
+                    <div className="grid grid-cols-2 gap-1 font-mono text-left">
+                      <span>좌우수정: {subLatCorr} m</span>
+                      <span>상하수정: {subVertCorr} m</span>
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-2.5">
+                    {/* 1. 수정편각 */}
+                    <div className="bg-[#0b1410] border border-emerald-800/40 rounded-xl p-4 text-center flex flex-col justify-between relative overflow-hidden shadow">
+                      <div className="absolute left-0 top-0 bottom-0 w-1 bg-[#10b981]" />
+                      <div>
+                        <span className="text-[9px] text-[#a1bfae] font-bold uppercase tracking-widest block mb-1">최종 수정편각 (Deflection)</span>
+                        <strong className="text-2xl font-black font-mono tracking-tight text-emerald-400 block mt-1">
+                          {subResultDeflection !== null ? subResultDeflection.toLocaleString() : '-'} <span className="text-xs font-normal text-slate-400 font-sans">mil</span>
+                        </strong>
+                      </div>
+                    </div>
+
+                    {/* 2. 수정사거리 */}
+                    <div className="bg-[#0b1410] border border-emerald-800/40 rounded-xl p-4 text-center flex flex-col justify-between relative overflow-hidden shadow">
+                      <div className="absolute left-0 top-0 bottom-0 w-1 bg-[#ef4444]" />
+                      <div>
+                        <span className="text-[9px] text-[#a1bfae] font-bold uppercase tracking-widest block mb-1">최종 수정사거리 (Corrected Range)</span>
+                        <strong className="text-2xl font-black font-mono tracking-tight text-white block mt-1">
+                          {subResultRange !== null ? subResultRange.toLocaleString() : '-'} <span className="text-xs font-normal text-slate-400 font-sans">m</span>
+                        </strong>
+                      </div>
+                    </div>
+                  </div>
                 </div>
-              </div>
+              )
             ) : (
-              <div key={calculationTrigger} className="space-y-3.5 animate-fade-in text-white">
+              // Traditional outputs view
+              !isInputsValid ? (
+                <div className="text-center py-10 space-y-2">
+                  <div className="w-10 h-10 rounded-full bg-white/5 text-slate-400 flex items-center justify-center mx-auto border border-white/10">
+                    <Crosshair className="w-5 h-5 animate-spin" style={{ animationDuration: '3s' }} />
+                  </div>
+                  <div>
+                    <p className="text-slate-300 text-xs font-bold">산출된 사격 제원이 없습니다</p>
+                    <p className="text-slate-500 text-[10px] mt-0.5">상단 입력 폼에 모든 사격 연산 수치를 입력해주십시오.</p>
+                  </div>
+                </div>
+              ) : (
+                <div key={calculationTrigger} className="space-y-3.5 animate-fade-in text-white">
                 
                 {/* Embedded target coordinates derived summary display */}
                 <div className="p-2.5 rounded-lg bg-emerald-950/20 border border-emerald-800/30 text-[10px] flex flex-col gap-1 text-[#a1bfae]">
@@ -1558,8 +1964,20 @@ ${detailSection}
                   </div>
                 </div>
 
+                {/* 차후사격전이 산출 전환 버튼 */}
+                <div className="pt-2">
+                  <button
+                    type="button"
+                    onClick={handleTransitionToSubsequent}
+                    className="w-full py-4 px-4 bg-[#f59e0b] hover:bg-[#d97706] active:scale-95 text-slate-900 font-black text-xs uppercase tracking-wider rounded-xl shadow-md transition-all flex items-center justify-center gap-2 cursor-pointer font-display"
+                  >
+                    <ArrowUpRight className="w-4 h-4 text-slate-900 stroke-[3]" />
+                    <span>차후사격제원 산출하기 (전달 및 전환)</span>
+                  </button>
+                </div>
+
               </div>
-            )}
+            ))}
           </section>
 
         </main>
